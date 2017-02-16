@@ -278,7 +278,7 @@ typedef NS_ENUM(NSInteger, CYLSex) {
 而 `assign` 的“设置方法”只会执行针对“纯量类型” (scalar type，例如 CGFloat 或 
 NSlnteger 等)的简单赋值操作。
 
- 2. assigin 可以用非 OC 对象,而 weak 必须用于 OC 对象
+ 2. assign 可以用非 OC 对象,而 weak 必须用于 OC 对象
 
 ###3. 怎么用 copy 关键字？
 用途：
@@ -498,7 +498,7 @@ typedef NS_ENUM(NSInteger, CYLSex) {
 }
 
 - (id)deepCopy {
-    CYLUser *copy = [[[self class] allocWithZone:zone]
+    CYLUser *copy = [[[self class] alloc]
                      initWithName:_name
                      age:_age
                      sex:_sex];
@@ -522,7 +522,7 @@ typedef NS_ENUM(NSInteger, CYLSex) {
 
  ```Objective-C
 - (id)deepCopy {
-    CYLUser *copy = [[[self class] allocWithZone:zone]
+    CYLUser *copy = [[[self class] alloc]
                      initWithName:_name
                      age:_age
                      sex:_sex];
@@ -686,7 +686,38 @@ typedef NS_ENUM(NSInteger, CYLSex) {
 @end
  ```
 
+**更新**：
 
+property在runtime中是`objc_property_t`定义如下:
+
+```objective-c
+typedef struct objc_property *objc_property_t;
+```
+
+而`objc_property`是一个结构体，包括name和attributes，定义如下：
+
+```objective-c
+struct property_t {
+    const char *name;
+    const char *attributes;
+};
+```
+
+而attributes本质是`objc_property_attribute_t`，定义了property的一些属性，定义如下：
+
+```objective-c
+/// Defines a property attribute
+typedef struct {
+    const char *name;           /**< The name of the attribute */
+    const char *value;          /**< The value of the attribute (usually empty) */
+} objc_property_attribute_t;
+```
+
+而attributes的具体内容是什么呢？其实，包括：类型，原子性，内存语义和对应的实例变量。
+
+例如：我们定义一个string的property`@property (nonatomic, copy) NSString *string;`，通过 `property_getAttributes(property)`获取到attributes并打印出来之后的结果为`T@"NSString",C,N,V_string`
+
+其中T就代表类型，可参阅[Type Encodings](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html#//apple_ref/doc/uid/TP40008048-CH100-SW1)，C就代表Copy，N代表nonatomic，V就代表对于的实例变量。
 
 
 
@@ -739,6 +770,51 @@ typedef NS_ENUM(NSInteger, CYLSex) {
 > runtime 对注册的类， 会进行布局，对于 weak 对象会放入一个 hash 表中。 用 weak 指向的对象内存地址作为 key，当此对象的引用计数为0的时候会 dealloc，假如 weak 指向的对象内存地址是a，那么就会以a为键， 在这个 weak 表中搜索，找到所有以a为键的 weak 对象，从而设置为 nil。
 
 （注：在下文的《使用runtime Associate方法关联的对象，需要在主对象dealloc的时候释放么？》里给出的“对象的内存销毁时间表”也提到`__weak`引用的解除时间。）
+
+
+先看下 runtime 里源码的实现：
+
+
+ ```Objective-C
+/**
+ * The internal structure stored in the weak references table. 
+ * It maintains and stores
+ * a hash set of weak references pointing to an object.
+ * If out_of_line==0, the set is instead a small inline array.
+ */
+#define WEAK_INLINE_COUNT 4
+struct weak_entry_t {
+    DisguisedPtr<objc_object> referent;
+    union {
+        struct {
+            weak_referrer_t *referrers;
+            uintptr_t        out_of_line : 1;
+            uintptr_t        num_refs : PTR_MINUS_1;
+            uintptr_t        mask;
+            uintptr_t        max_hash_displacement;
+        };
+        struct {
+            // out_of_line=0 is LSB of one of these (don't care which)
+            weak_referrer_t  inline_referrers[WEAK_INLINE_COUNT];
+        };
+    };
+};
+
+/**
+ * The global weak references table. Stores object ids as keys,
+ * and weak_entry_t structs as their values.
+ */
+struct weak_table_t {
+    weak_entry_t *weak_entries;
+    size_t    num_entries;
+    uintptr_t mask;
+    uintptr_t max_hash_displacement;
+};
+ ```
+
+具体完整实现参照 [objc/objc-weak.h](https://opensource.apple.com/source/objc4/objc4-646/runtime/objc-weak.h) 。
+
+
 
 我们可以设计一个函数（伪代码）来表示上述机制：
 
@@ -988,7 +1064,7 @@ NSObject *foo = [[NSObject alloc] init];
  
  1. 原子性--- `nonatomic` 特质
 
-    在默认情况下，由编译器合成的方法会通过锁定机制确保其原子性(atomicity)。如果属性具备 nonatomic 特质，则不使用同步锁。请注意，尽管没有名为“atomic”的特质(如果某属性不具备 nonatomic 特质，那它就是“原子的” ( atomic) )，但是仍然可以在属性特质中写明这一点，编译器不会报错。若是自己定义存取方法，那么就应该遵从与属性特质相符的原子性。
+    在默认情况下，由编译器合成的方法会通过锁定机制确保其原子性(atomicity)。如果属性具备 nonatomic 特质，则不使用自旋锁。请注意，尽管没有名为“atomic”的特质(如果某属性不具备 nonatomic 特质，那它就是“原子的” ( atomic) )，但是仍然可以在属性特质中写明这一点，编译器不会报错。若是自己定义存取方法，那么就应该遵从与属性特质相符的原子性。
 
  2. 读/写权限---`readwrite(读写)`、`readonly (只读)`
  3. 内存管理语义---`assign`、`strong`、 `weak`、`unsafe_unretained`、`copy`
@@ -1026,6 +1102,53 @@ NSObject *foo = [[NSObject alloc] init];
  ```
 
  3. 不常用的：`nonnull`,`null_resettable`,`nullable`
+
+
+注意：很多人会认为如果属性具备 nonatomic 特质，则不使用
+“同步锁”。其实在属性设置方法中使用的是自旋锁，自旋锁相关代码如下：
+
+
+ ```Objective-C
+static inline void reallySetProperty(id self, SEL _cmd, id newValue, ptrdiff_t offset, bool atomic, bool copy, bool mutableCopy)
+{
+    if (offset == 0) {
+        object_setClass(self, newValue);
+        return;
+    }
+
+    id oldValue;
+    id *slot = (id*) ((char*)self + offset);
+
+    if (copy) {
+        newValue = [newValue copyWithZone:nil];
+    } else if (mutableCopy) {
+        newValue = [newValue mutableCopyWithZone:nil];
+    } else {
+        if (*slot == newValue) return;
+        newValue = objc_retain(newValue);
+    }
+
+    if (!atomic) {
+        oldValue = *slot;
+        *slot = newValue;
+    } else {
+        spinlock_t& slotlock = PropertyLocks[slot];
+        slotlock.lock();
+        oldValue = *slot;
+        *slot = newValue;        
+        slotlock.unlock();
+    }
+
+    objc_release(oldValue);
+}
+
+void objc_setProperty(id self, SEL _cmd, ptrdiff_t offset, id newValue, BOOL atomic, signed char shouldCopy) 
+{
+    bool copy = (shouldCopy && shouldCopy != MUTABLE_COPY);
+    bool mutableCopy = (shouldCopy == MUTABLE_COPY);
+    reallySetProperty(self, _cmd, newValue, offset, atomic, copy, mutableCopy);
+}
+ ```
 
 ###10. weak属性需要在dealloc中置nil么？
 不需要。
@@ -1898,3 +2021,5 @@ runtime部分主要参考[Apple官方文档：Declared Properties](https://devel
 
 Posted by [微博@iOS程序犭袁](http://weibo.com/luohanchenyilong/)  
 原创文章，版权声明：自由转载-非商用-非衍生-保持署名 | [Creative Commons BY-NC-ND 3.0](http://creativecommons.org/licenses/by-nc-nd/3.0/deed.zh)
+
+
