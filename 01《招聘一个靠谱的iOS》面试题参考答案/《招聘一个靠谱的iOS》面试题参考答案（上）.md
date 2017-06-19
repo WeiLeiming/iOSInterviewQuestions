@@ -1226,8 +1226,9 @@ void objc_setProperty(id self, SEL _cmd, ptrdiff_t offset, id newValue, BOOL ato
 然后进行下面的操作：
 
  ```Objective-C
-    NSMutableArray *mutableArray = [[NSMutableArray alloc] init];
     NSArray *array = @[ @1, @2, @3, @4 ];
+    NSMutableArray *mutableArray = [NSMutableArray arrayWithArray:array];
+    
     self.array = mutableArray;
     [mutableArray removeAllObjects];;
     NSLog(@"%@",self.array);
@@ -1567,7 +1568,7 @@ clang -rewrite-objc main.m
 
 也就是说：
 
->  [obj foo];在objc动态编译时，会被转意为：`objc_msgSend(obj, @selector(foo));`。
+>  [obj foo];在objc编译时，会被转意为：`objc_msgSend(obj, @selector(foo));`。
 
 ### 18. 什么时候会报unrecognized selector的异常？
 
